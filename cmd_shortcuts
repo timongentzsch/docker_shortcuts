@@ -1,0 +1,248 @@
+###
+### Run Docker container
+###
+
+drun() {
+
+    xhost +
+
+    STARTUP_CONFIG="/bin/bash -c \"echo \\\"PS1='$ '\\\\\\\$PS1\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || true && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+
+    DOCKER_ARGS=()
+    POSITIONAL_ARGS=()
+    USE_GPU=true
+    PERSISTENT_CONTAINER=false
+    USER_HOME="/root"
+
+    # Default
+    DOCKER_ARGS+=("-v /tmp/.X11-unix:/tmp/.X11-unix")
+
+    if [[ "$OSTYPE" =~ ^darwin ]]; 
+        then 
+            DOCKER_ARGS+=("-e DISPLAY=host.docker.internal:0")
+        else
+            DOCKER_ARGS+=("-e DISPLAY")
+    fi;
+    DOCKER_ARGS+=("--privileged")
+    DOCKER_ARGS+=("-e color_prompt=yes")
+    DOCKER_ARGS+=("--network host")
+    DOCKER_ARGS+=("-v /dev:/dev")
+    if [ -d "/mnt" ]; then
+        DOCKER_ARGS+=("-v /mnt:/mnt")
+    fi
+
+    while [[ $# -gt 0 ]]; do
+    case $1 in
+        --gpus)
+            if [[ "$2" == "none" ]];
+                then
+                USE_GPU=false
+                else
+                DOCKER_ARGS+=("$1 $2")
+            fi;
+            shift # past value
+            shift
+            ;;
+        -n|--name)
+            PERSISTENT_CONTAINER=true
+            DOCKER_ARGS+=("$1 $2")
+            CONTAINER_NAME=$2
+            shift # past argument
+            shift # past value
+            ;;
+        -u|--user)
+            USER_HOME="/home/$2"
+            DOCKER_ARGS+=("$1 $2")
+            shift
+            shift
+            ;;
+        -*|--*)
+            DOCKER_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1") # save positional arg
+            shift
+            ;;
+    esac
+    done
+
+    # Setup SSH keys
+    DOCKER_ARGS+=("-v $HOME/.ssh:$USER_HOME/.ssh")
+
+    # setup X server
+    DOCKER_ARGS+=("-v $HOME/.Xauthority:$USER_HOME/.Xauthority")
+
+    # if platform is macos, or /usr/local/cuda does not exist, disable gpu
+    if [[ "$OSTYPE" =~ ^darwin ]] || [ ! -d "/usr/local/cuda" ];
+    then
+        USE_GPU=false
+    fi;
+
+    if [[ $USE_GPU == true ]];
+    then
+        DOCKER_ARGS+=("--gpus all")
+        DOCKER_ARGS+=("-e NVIDIA_DRIVER_CAPABILITIES=all")
+        DOCKER_ARGS+=("-e NVIDIA_VISIBLE_DEVICES=all")
+        # legacy / jetson
+        DOCKER_ARGS+=("--runtime nvidia")
+    fi;
+
+    if [[ $PERSISTENT_CONTAINER == false ]];
+    then
+        echo ""
+        echo "Initializing disposable container"
+        DOCKER_ARGS+=("--rm")
+        date=`date +\%s`
+        CONTAINER_NAME="${date}"
+    else
+        echo ""
+        echo "Saving container under: $CONTAINER_NAME"
+    fi;
+
+    STARTUP_CONFIG="-c \"echo \\\"PS1='$CONTAINER_NAME '\\\\\\\$PS1\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || true && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+
+    if [[ ! ${#POSITIONAL_ARGS[@]} -gt 1 ]];
+    then
+        DOCKER_ARGS+=("-ti")
+        POSITIONAL_ARGS+=("$STARTUP_CONFIG")
+        DOCKER_ARGS+=("--entrypoint /bin/bash")
+    fi;
+
+    RUN_COMMAND="docker run"\ ${DOCKER_ARGS[@]}\ ${POSITIONAL_ARGS[@]}
+
+    echo ""
+    echo "Container initialized with following arguments:"
+    echo $RUN_COMMAND
+    echo ""
+
+    ($SHELL  -c "$RUN_COMMAND")
+    # restore PS1
+    exec $SHELL 
+}
+
+###
+### Build Docker container
+###
+
+dbuild() {
+
+    DOCKER_BUILD_ARGS=()
+
+    # Map group and user id
+    DOCKER_BUILD_ARGS+=("--network host")
+    DOCKER_BUILD_ARGS+=("--build-arg USER_ID=$(id -u)")
+	DOCKER_BUILD_ARGS+=("--build-arg GROUP_ID=$(id -g)")
+
+    DOCKER_BUILDKIT=1 docker build ${DOCKER_BUILD_ARGS[@]} $@ ;
+}
+
+###
+### Attach shell
+###
+
+dshell() {
+
+    xhost +
+
+    STARTUP_CONFIG="/bin/bash -c \"chown \\\$(id -un) ~/.ssh/config && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+    DOCKER_ARGS=()
+    POSITIONAL_ARGS=()
+    CONTAINER_NAME=""
+
+    DOCKER_ARGS+=("-it")
+    DOCKER_ARGS+=("-e DISPLAY=$DISPLAY")
+
+    while [[ $# -gt 0 ]]; do
+    case $1 in
+        -*|--*)
+            DOCKER_ARGS+=("$1 $2")
+            shift
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1") # save positional arg
+            shift
+            ;;
+    esac
+    done
+
+    if [[ ! -z ${POSITIONAL_ARGS[0]} ]];
+        then
+            CONTAINER_NAME="${POSITIONAL_ARGS[0]}"
+    fi;
+
+    if [[ -z $CONTAINER_NAME ]];
+        then
+            CONTAINER_NAME=`docker container ls -a | awk 'NR==2 {print $NF}'`
+            echo "No container name given; using recent container: $CONTAINER_NAME"
+            POSITIONAL_ARGS+=("$CONTAINER_NAME")
+    fi;
+
+    CONTAINER_STATUS=`docker inspect -f "{{.State.Status}}" $CONTAINER_NAME`
+
+    if [[ "$CONTAINER_STATUS" == "exited" ]];
+        then
+            echo "Container Status: exited; restarting..."
+            docker start $CONTAINER_NAME
+    fi;
+
+
+    POSITIONAL_ARGS+=("$STARTUP_CONFIG")
+
+    ATTACH_COMMAND="docker exec"\ ${DOCKER_ARGS[@]}\ ${POSITIONAL_ARGS[@]}
+
+    ($SHELL -c "$ATTACH_COMMAND")
+    # restore PS1
+    exec $SHELL
+}
+
+
+if [[ "$SHELL" == "/bin/bash" ]];
+    then
+    function docker_alias_completion_wrapper {
+    local completion_function="$1";
+    local alias_name="$2";
+
+    local func=$(cat <<EOT
+    # Generate a new completion function name
+    function _$alias_name() {
+    # Start off like _docker()
+    local previous_extglob_setting=\$(shopt -p extglob);
+    shopt -s extglob;
+
+    # Populate \$cur, \$prev, \$words, \$cword
+    _get_comp_words_by_ref -n : cur prev words cword;
+
+    # Declare and execute
+    declare -F $completion_function >/dev/null && $completion_function;
+
+    eval "\$previous_extglob_setting";
+    return 0;}; 
+EOT
+    );
+    eval "$func";
+
+    # Register the alias completion function
+    complete -F _$alias_name $alias_name
+    }
+
+    export -f docker_alias_completion_wrapper
+    # load docker completion
+    _completion_loader docker;
+
+    # Register completion function
+    docker_alias_completion_wrapper _docker_image_build dbuild
+
+    # Register completion function
+    docker_alias_completion_wrapper _docker_container_run_and_create drun
+
+    # Register completion function
+    docker_alias_completion_wrapper __docker_complete_containers_all dshell
+
+elif [[ "$SHELL" == "/bin/zsh" ]];
+    then
+    source $HOME/.oh-my-zsh/plugins/docker/_docker;
+    compdef __docker_complete_images drun;
+    compdef __docker_complete_containers dshell;
+fi;
