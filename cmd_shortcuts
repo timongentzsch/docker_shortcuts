@@ -6,8 +6,6 @@ drun() {
 
     xhost +
 
-    STARTUP_CONFIG="/bin/bash -c \"echo \\\"PS1='$ '\\\\\\\$PS1\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || true && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
-
     DOCKER_ARGS=()
     POSITIONAL_ARGS=()
     USE_GPU=true
@@ -24,12 +22,13 @@ drun() {
             DOCKER_ARGS+=("-e DISPLAY")
     fi;
     DOCKER_ARGS+=("--privileged")
+
     DOCKER_ARGS+=("-e color_prompt=yes")
+    DOCKER_ARGS+=("-e first_run=yes")
+
     DOCKER_ARGS+=("--network host")
     DOCKER_ARGS+=("-v /dev:/dev")
-    if [ -d "/mnt" ]; then
-        DOCKER_ARGS+=("-v /mnt:/mnt")
-    fi
+    # DOCKER_ARGS+=("-v /mnt:/mnt")
 
     while [[ $# -gt 0 ]]; do
     case $1 in
@@ -73,12 +72,6 @@ drun() {
     # setup X server
     DOCKER_ARGS+=("-v $HOME/.Xauthority:$USER_HOME/.Xauthority")
 
-    # if platform is macos, or /usr/local/cuda does not exist, disable gpu
-    if [[ "$OSTYPE" =~ ^darwin ]] || [ ! -d "/usr/local/cuda" ];
-    then
-        USE_GPU=false
-    fi;
-
     if [[ $USE_GPU == true ]];
     then
         DOCKER_ARGS+=("--gpus all")
@@ -100,7 +93,7 @@ drun() {
         echo "Saving container under: $CONTAINER_NAME"
     fi;
 
-    STARTUP_CONFIG="-c \"echo \\\"PS1='$CONTAINER_NAME '\\\\\\\$PS1\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || true && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+    STARTUP_CONFIG="-c \"echo \\\"if [ ! '\\\\\\\$first_run' = yes ]; then PS1='$CONTAINER_NAME '\\\\\\\$PS1; fi\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || touch ~/.ssh/config && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
 
     if [[ ! ${#POSITIONAL_ARGS[@]} -gt 1 ]];
     then
@@ -133,6 +126,7 @@ dbuild() {
     DOCKER_BUILD_ARGS+=("--network host")
     DOCKER_BUILD_ARGS+=("--build-arg USER_ID=$(id -u)")
 	DOCKER_BUILD_ARGS+=("--build-arg GROUP_ID=$(id -g)")
+    DOCKER_BUILD_ARGS+=("--ssh default")
 
     DOCKER_BUILDKIT=1 docker build ${DOCKER_BUILD_ARGS[@]} $@ ;
 }
@@ -151,7 +145,8 @@ dshell() {
     CONTAINER_NAME=""
 
     DOCKER_ARGS+=("-it")
-    DOCKER_ARGS+=("-e DISPLAY=$DISPLAY")
+    DOCKER_ARGS+=("-e DISPLAY")
+    DOCKER_ARGS+=("-e first_run=no")
 
     while [[ $# -gt 0 ]]; do
     case $1 in
