@@ -23,12 +23,16 @@ drun() {
     fi;
     DOCKER_ARGS+=("--privileged")
 
-    DOCKER_ARGS+=("-e color_prompt=yes")
     DOCKER_ARGS+=("-e first_run=yes")
 
     DOCKER_ARGS+=("--network host")
     DOCKER_ARGS+=("-v /dev:/dev")
-    # DOCKER_ARGS+=("-v /mnt:/mnt")
+
+    # if mnt folder exists, mount it
+    if [[ -d "/mnt" ]];
+        then
+            DOCKER_ARGS+=("-v /mnt:/mnt")
+    fi;
 
     while [[ $# -gt 0 ]]; do
     case $1 in
@@ -52,11 +56,13 @@ drun() {
         -u|--user)
             USER_HOME="/home/$2"
             DOCKER_ARGS+=("$1 $2")
+            DOCKER_ARGS+=("-e color_prompt=yes")
             shift
             shift
             ;;
         -*|--*)
             DOCKER_ARGS+=("$1")
+            shift
             shift
             ;;
         *)
@@ -70,13 +76,27 @@ drun() {
     DOCKER_ARGS+=("-v $HOME/.ssh:$USER_HOME/.ssh")
 
     # setup X server
+    # if .Xauthority not exists, create it
+    if [[ ! -f "$HOME/.Xauthority" ]];
+        then
+            touch $HOME/.Xauthority
+    fi;
+
     DOCKER_ARGS+=("-v $HOME/.Xauthority:$USER_HOME/.Xauthority")
 
     if [[ $USE_GPU == true ]];
     then
         DOCKER_ARGS+=("--gpus all")
-        DOCKER_ARGS+=("-e NVIDIA_DRIVER_CAPABILITIES=all")
         DOCKER_ARGS+=("-e NVIDIA_VISIBLE_DEVICES=all")
+        DOCKER_ARGS+=("-e NVIDIA_DRIVER_CAPABILITIES=all")
+        DOCKER_ARGS+=("-e NVIDIA_DISABLE_REQUIRE=True")
+        DOCKER_ARGS+=("-v /usr/local/cuda:/usr/local/cuda")
+        # vulkan
+        nvidia_icd_json=$(find /usr/share /etc -path '*/vulkan/icd.d/nvidia_icd.json' -type f 2>/dev/null | grep .) || (echo "nvidia_icd.json not found" >&2 && false)
+        DOCKER_ARGS+=("-v $nvidia_icd_json:$nvidia_icd_json")
+        DOCKER_ARGS+=("-v /etc/vulkan/implicit_layer.d/nvidia_layers.json:/etc/vulkan/implicit_layer.d/nvidia_layers.json")
+        DOCKER_ARGS+=("-v /usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
+
         # legacy / jetson
         DOCKER_ARGS+=("--runtime nvidia")
     fi;
@@ -93,7 +113,7 @@ drun() {
         echo "Saving container under: $CONTAINER_NAME"
     fi;
 
-    STARTUP_CONFIG="-c \"echo \\\"if [ ! '\\\\\\\$first_run' = yes ]; then PS1='$CONTAINER_NAME '\\\\\\\$PS1; fi\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || touch ~/.ssh/config && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+    STARTUP_CONFIG="-c \"echo \\\"if [ ! '\\\\\\\$first_run' = yes ]; then PS1='$CONTAINER_NAME '\\\\\\\$PS1;fi\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || touch ~/.ssh/config && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
 
     if [[ ! ${#POSITIONAL_ARGS[@]} -gt 1 ]];
     then
