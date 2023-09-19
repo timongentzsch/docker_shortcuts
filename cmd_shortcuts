@@ -2,137 +2,118 @@
 ### Run Docker container
 ###
 
-drun() {
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+GRAY='\033[0;37m'
+NC='\033[0m' # No Color
 
-    xhost +
+drun() {
+    xhost + > /dev/null
 
     DOCKER_ARGS=()
     POSITIONAL_ARGS=()
     USE_GPU=true
     PERSISTENT_CONTAINER=false
-    USER_HOME="/root"
 
-    # Default
-    DOCKER_ARGS+=("-v /tmp/.X11-unix:/tmp/.X11-unix")
+    # Default Docker arguments
+    [[ "$OSTYPE" =~ ^darwin ]] && DOCKER_ARGS+=("-e DISPLAY=host.docker.internal:0") || DOCKER_ARGS+=("-e DISPLAY")
+    DOCKER_ARGS+=("--privileged" "-it" "--network host" "-v /dev:/dev" "-e TERM=xterm-256color")
 
-    if [[ "$OSTYPE" =~ ^darwin ]]; 
-        then 
-            DOCKER_ARGS+=("-e DISPLAY=host.docker.internal:0")
-        else
-            DOCKER_ARGS+=("-e DISPLAY")
-    fi;
-    DOCKER_ARGS+=("--privileged")
-
-    DOCKER_ARGS+=("-e first_run=yes")
-
-    DOCKER_ARGS+=("--network host")
-    DOCKER_ARGS+=("-v /dev:/dev")
-
-    # if mnt folder exists, mount it
-    if [[ -d "/mnt" ]];
-        then
-            DOCKER_ARGS+=("-v /mnt:/mnt")
-    fi;
-
+    # Mount /mnt if it exists
+    [[ -d "/mnt" ]] && DOCKER_ARGS+=("-v /mnt:/mnt")
+    # Process input arguments
     while [[ $# -gt 0 ]]; do
-    case $1 in
+    key="$1"
+
+    case $key in
         --gpus)
-            if [[ "$2" == "none" ]];
-                then
+            if [[ "$2" == "none" ]]; then
                 USE_GPU=false
-                else
-                DOCKER_ARGS+=("$1 $2")
-            fi;
-            shift # past value
-            shift
+                shift 2;
+            else
+                DOCKER_ARGS+=("$1")
+                DOCKER_ARGS+=("$2")
+                shift 2;
+            fi
             ;;
         -n|--name)
+            CONTAINER_NAME="$2"
             PERSISTENT_CONTAINER=true
-            DOCKER_ARGS+=("$1 $2")
-            CONTAINER_NAME=$2
-            shift # past argument
-            shift # past value
-            ;;
-        -u|--user)
-            USER_HOME="/home/$2"
-            DOCKER_ARGS+=("$1 $2")
-            DOCKER_ARGS+=("-e color_prompt=yes")
-            shift
-            shift
+            shift 2;
             ;;
         -*|--*)
-            DOCKER_ARGS+=("$1")
-            shift
-            shift
+            if [[ "$2" =~ ^- ]]; then
+                DOCKER_ARGS+=("$1")
+                shift;
+            else
+                DOCKER_ARGS+=("$1")
+                DOCKER_ARGS+=("$2")
+                shift 2;
+            fi
             ;;
         *)
-            POSITIONAL_ARGS+=("$1") # save positional arg
+            POSITIONAL_ARGS+=("$1")
             shift
             ;;
     esac
-    done
+done
 
-    # Setup SSH keys
-    DOCKER_ARGS+=("-v $HOME/.ssh:$USER_HOME/.ssh")
 
-    # setup X server
-    # if .Xauthority not exists, create it
-    if [[ ! -f "$HOME/.Xauthority" ]];
-        then
-            touch $HOME/.Xauthority
-    fi;
+    DOCKER_ARGS+=("-v $HOME:/home/_host_")
 
-    DOCKER_ARGS+=("-v $HOME/.Xauthority:$USER_HOME/.Xauthority")
-
-    if [[ $USE_GPU == true ]];
-    then
-        DOCKER_ARGS+=("--gpus all")
-        DOCKER_ARGS+=("-e NVIDIA_VISIBLE_DEVICES=all")
-        DOCKER_ARGS+=("-e NVIDIA_DRIVER_CAPABILITIES=all")
-        DOCKER_ARGS+=("-e NVIDIA_DISABLE_REQUIRE=True")
-        DOCKER_ARGS+=("-v /usr/local/cuda:/usr/local/cuda")
-        # vulkan
-        nvidia_icd_json=$(find /usr/share /etc -path '*/vulkan/icd.d/nvidia_icd.json' -type f 2>/dev/null | grep .) || (echo "nvidia_icd.json not found" >&2 && false)
-        DOCKER_ARGS+=("-v $nvidia_icd_json:$nvidia_icd_json")
-        DOCKER_ARGS+=("-v /etc/vulkan/implicit_layer.d/nvidia_layers.json:/etc/vulkan/implicit_layer.d/nvidia_layers.json")
-        DOCKER_ARGS+=("-v /usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
-
-        # legacy / jetson
-        DOCKER_ARGS+=("--runtime nvidia")
-    fi;
-
-    if [[ $PERSISTENT_CONTAINER == false ]];
-    then
-        echo ""
-        echo "Initializing disposable container"
-        DOCKER_ARGS+=("--rm")
-        date=`date +\%s`
-        CONTAINER_NAME="${date}"
+    if [[ $XDG_SESSION_TYPE == "wayland" ]]; then
+        echo "Wayland detected"
+        WAYLAND_SOCKET_DIR=$(dirname $XDG_RUNTIME_DIR/$(echo $WAYLAND_DISPLAY))
+        DOCKER_ARGS+=("-v $WAYLAND_SOCKET_DIR:$WAYLAND_SOCKET_DIR" "-e WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
     else
-        echo ""
-        echo "Saving container under: $CONTAINER_NAME"
-    fi;
+        DOCKER_ARGS+=("-e DISPLAY")
+        DOCKER_ARGS+=("-v /tmp/.X11-unix:/tmp/.X11-unix")
+    fi
 
-    STARTUP_CONFIG="-c \"echo \\\"if [ ! '\\\\\\\$first_run' = yes ]; then PS1='$CONTAINER_NAME '\\\\\\\$PS1;fi\\\" >> ~/.bashrc && chown \\\$(id -un) ~/.ssh/config || touch ~/.ssh/config && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+    # Set XDG_RUNTIME_DIR for both X11 and Wayland
+    DOCKER_ARGS+=("-e XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+    DOCKER_ARGS+=("-v $XDG_RUNTIME_DIR:$XDG_RUNTIME_DIR")
 
-    if [[ ! ${#POSITIONAL_ARGS[@]} -gt 1 ]];
-    then
-        DOCKER_ARGS+=("-ti")
-        POSITIONAL_ARGS+=("$STARTUP_CONFIG")
-        DOCKER_ARGS+=("--entrypoint /bin/bash")
-    fi;
+    if [[ $USE_GPU == true ]]; then
+        DOCKER_ARGS+=("--gpus all" "-e NVIDIA_VISIBLE_DEVICES=all" "-e NVIDIA_DRIVER_CAPABILITIES=all" "-e NVIDIA_DISABLE_REQUIRE=True")
+        nvidia_icd_json=$(find /usr/share /etc -path '*/vulkan/icd.d/nvidia_icd.json' -type f 2>/dev/null | grep .) || (echo "nvidia_icd.json not found" >&2 && false)
+        DOCKER_ARGS+=("-v $nvidia_icd_json:$nvidia_icd_json" "-v /etc/vulkan/implicit_layer.d/nvidia_layers.json:/etc/vulkan/implicit_layer.d/nvidia_layers.json" "-v /usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json")
+    fi
 
-    RUN_COMMAND="docker run"\ ${DOCKER_ARGS[@]}\ ${POSITIONAL_ARGS[@]}
+    if [[ $PERSISTENT_CONTAINER == false ]]; then
+        DOCKER_ARGS+=("--rm")
+        CONTAINER_NAME="${CONTAINER_NAME:-$(date +\%s)}"
+        echo -e "${YELLOW}Initializing disposable container${NC}"
+    else
+        echo -e"${GREEN}Saving container under: $CONTAINER_NAME${NC}"
+    fi
+    DOCKER_ARGS+=("--name $CONTAINER_NAME")
 
-    echo ""
-    echo "Container initialized with following arguments:"
-    echo $RUN_COMMAND
-    echo ""
+    IMAGE_NAME="${POSITIONAL_ARGS[0]}"
+    # POSITIONAL_ARGS=("${POSITIONAL_ARGS[@]:1}")
 
-    ($SHELL  -c "$RUN_COMMAND")
+    INITIAL_CMD=$( $SHELL -c "docker inspect --format='{{json .Config.Cmd}}' $IMAGE_NAME" )
+    
+    while IFS= read -r line; do
+        INITIAL_CMD_ARRAY+=("$line")
+    done < <(echo "$INITIAL_CMD" | jq -r '.[]')
+
+    EXTRA_CMD=()
+    EXTRA_CMD+=("ln -s /home/_host_/.ssh \\\$HOME/.ssh &&")
+    EXTRA_CMD+=("mv \\\$HOME/.ssh/config \\\$HOME/.ssh/config.bak &&")
+    EXTRA_CMD+=("echo -e \\\"\\\nPS1=\\\\\\\"🐋 \\\\\\\$PS1\\\\\\\"\\\" >> \\\$HOME/.bashrc &&")
+
+
+    RUN_COMMAND="docker run ${DOCKER_ARGS[*]} $IMAGE_NAME \"/bin/bash\" \"-c\" \"${EXTRA_CMD[*]} ${INITIAL_CMD_ARRAY[*]}\""
+    echo -e "${CYAN}Container initialized with following arguments:\n${GRAY}${RUN_COMMAND}${NC}"
+    $SHELL -c "$RUN_COMMAND"
+
     # restore PS1
     exec $SHELL 
 }
+
 
 ###
 ### Build Docker container
@@ -157,29 +138,33 @@ dbuild() {
 
 dshell() {
 
-    xhost +
+    xhost + > /dev/null
 
-    STARTUP_CONFIG="/bin/bash -c \"chown \\\$(id -un) ~/.ssh/config && chmod ugo-w+r ~/.ssh/config && /bin/bash\""
+    STARTUP_CONFIG="/bin/bash"
     DOCKER_ARGS=()
     POSITIONAL_ARGS=()
     CONTAINER_NAME=""
 
     DOCKER_ARGS+=("-it")
     DOCKER_ARGS+=("-e DISPLAY")
-    DOCKER_ARGS+=("-e first_run=no")
 
     while [[ $# -gt 0 ]]; do
     case $1 in
-        -*|--*)
-            DOCKER_ARGS+=("$1 $2")
-            shift
-            shift
+        *|--*)
+            if [[ "$2" =~ ^- ]]; then
+                DOCKER_ARGS+=("$1")
+                shift;
+            else
+                DOCKER_ARGS+=("$1")
+                DOCKER_ARGS+=("$2")
+                shift 2;
+            fi
             ;;
         *)
-            POSITIONAL_ARGS+=("$1") # save positional arg
+            POSITIONAL_ARGS+=("$1")
             shift
             ;;
-    esac
+        esac
     done
 
     if [[ ! -z ${POSITIONAL_ARGS[0]} ]];
@@ -190,7 +175,7 @@ dshell() {
     if [[ -z $CONTAINER_NAME ]];
         then
             CONTAINER_NAME=`docker container ls -a | awk 'NR==2 {print $NF}'`
-            echo "No container name given; using recent container: $CONTAINER_NAME"
+            echo -e "${CYAN}No container name given; using recent container: $CONTAINER_NAME${NC}"
             POSITIONAL_ARGS+=("$CONTAINER_NAME")
     fi;
 
@@ -198,9 +183,8 @@ dshell() {
 
     if [[ "$CONTAINER_STATUS" == "exited" ]];
         then
-            echo "Container Status: exited; restarting..."
-            docker start $CONTAINER_NAME
-            docker exec $CONTAINER_NAME /bin/bash -c "sed -i '$ d' \$HOME/.bashrc"
+        echo -e "${CYAN}Container Status: exited; restarting...${NC}"
+        docker start $CONTAINER_NAME
     fi;
 
 
