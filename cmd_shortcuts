@@ -90,23 +90,30 @@ done
         echo -e"${GREEN}Saving container under: $CONTAINER_NAME${NC}"
     fi
     DOCKER_ARGS+=("--name $CONTAINER_NAME")
+    DOCKER_ARGS+=("--entrypoint \"/bin/sh\"")
 
     IMAGE_NAME="${POSITIONAL_ARGS[0]}"
-    # POSITIONAL_ARGS=("${POSITIONAL_ARGS[@]:1}")
 
+    INITIAL_CMD_ARRAY=()
     INITIAL_CMD=$( $SHELL -c "docker inspect --format='{{json .Config.Cmd}}' $IMAGE_NAME" )
-    
-    while IFS= read -r line; do
-        INITIAL_CMD_ARRAY+=("$line")
-    done < <(echo "$INITIAL_CMD" | jq -r '.[]')
+    # check if INITIAL_CMD is not "null"
+    if [[ "$INITIAL_CMD" == "null" ]]; 
+        then
+            INITIAL_CMD_ARRAY+=("/bin/bash")
+        else
+            while IFS= read -r line; do
+                INITIAL_CMD_ARRAY+=("$line")
+            done < <(echo "$INITIAL_CMD" | jq -r '.[]')
+    fi
+
 
     EXTRA_CMD=()
-    EXTRA_CMD+=("ln -s /home/_host_/.ssh \\\$HOME/.ssh &&")
-    EXTRA_CMD+=("mv \\\$HOME/.ssh/config \\\$HOME/.ssh/config.bak &&")
-    EXTRA_CMD+=("echo -e \\\"\\\nPS1=\\\\\\\"🐋 \\\\\\\$PS1\\\\\\\"\\\" >> \\\$HOME/.bashrc &&")
+    EXTRA_CMD+=("sudo chown root /home/_host_/.ssh >/dev/null 2>&1 || chown root /home/_host_/.ssh >/dev/null 2>&1 || true &&")
+    EXTRA_CMD+=("[ -d \\\"/home/_host_/.ssh\\\" ] && ln -s /home/_host_/.ssh \\\$HOME/.ssh &&")
+    EXTRA_CMD+=("echo \\\"\\\nPS1=\\\\\\\"🐋 \\\\\\\$PS1\\\\\\\"\\\" >> \\\$HOME/.bashrc &&")
 
 
-    RUN_COMMAND="docker run ${DOCKER_ARGS[*]} $IMAGE_NAME \"/bin/bash\" \"-c\" \"${EXTRA_CMD[*]} ${INITIAL_CMD_ARRAY[*]}\""
+    RUN_COMMAND="docker run ${DOCKER_ARGS[*]} $IMAGE_NAME \"-c\" \"${EXTRA_CMD[*]} ${INITIAL_CMD_ARRAY[*]}\""
     echo -e "${CYAN}Container initialized with following arguments:\n${GRAY}${RUN_COMMAND}${NC}"
     $SHELL -c "$RUN_COMMAND"
 
@@ -150,7 +157,7 @@ dshell() {
 
     while [[ $# -gt 0 ]]; do
     case $1 in
-        *|--*)
+        -*|--*)
             if [[ "$2" =~ ^- ]]; then
                 DOCKER_ARGS+=("$1")
                 shift;
@@ -169,7 +176,7 @@ dshell() {
 
     if [[ ! -z ${POSITIONAL_ARGS[0]} ]];
         then
-            CONTAINER_NAME="${POSITIONAL_ARGS[0]}"
+            CONTAINER_NAME=${POSITIONAL_ARGS[0]}
     fi;
 
     if [[ -z $CONTAINER_NAME ]];
