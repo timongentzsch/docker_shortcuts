@@ -95,30 +95,27 @@ done
     IMAGE_NAME="${POSITIONAL_ARGS[0]}"
 
     INITIAL_CMD_ARRAY=()
-    INITIAL_CMD=$( $SHELL -c "docker inspect --format='{{json .Config.Cmd}}' $IMAGE_NAME" )
-    # check if INITIAL_CMD is not "null"
+    INITIAL_CMD=$(docker inspect --format='{{json .Config.Cmd}}' $IMAGE_NAME)
     if [[ "$INITIAL_CMD" == "null" ]]; 
         then
             INITIAL_CMD_ARRAY+=("/bin/bash")
         else
-            while IFS= read -r line; do
-                INITIAL_CMD_ARRAY+=("$line")
-            done < <(echo "$INITIAL_CMD" | jq -r '.[]')
+            formatted_output=$(echo "$INITIAL_CMD" | sed "s/\"/'/g" | sed "s/\[//g" | sed "s/\]//g" | tr ',' ' ')
+            eval "INITIAL_CMD_ARRAY=($formatted_output)"
     fi
 
 
-    EXTRA_CMD=()
-    EXTRA_CMD+=("sudo chown root /home/_host_/.ssh >/dev/null 2>&1 || chown root /home/_host_/.ssh >/dev/null 2>&1 || true &&")
-    EXTRA_CMD+=("[ -d \\\"/home/_host_/.ssh\\\" ] && ln -s /home/_host_/.ssh \\\$HOME/.ssh &&")
-    EXTRA_CMD+=("echo \\\"\\\nPS1=\\\\\\\"🐋 \\\\\\\$PS1\\\\\\\"\\\" >> \\\$HOME/.bashrc &&")
+   EXTRA_CMD=(
+        'sudo chown root /home/_host_/.ssh/config > /dev/null 2>&1 || chown root /home/_host_/.ssh/config > /dev/null 2>&1 || true'
+        '[ -d \"/home/_host_/.ssh\" ] && ln -s /home/_host_/.ssh \$HOME/.ssh || true'
+        'grep -q 🐋 \$HOME/.bashrc || echo PS1=\\\"🐋 \\\$PS1\\\" >> \$HOME/.bashrc'
+    )
 
+    CMD_TO_RUN="$(IFS="; "; echo "${EXTRA_CMD[*]}") ; ${INITIAL_CMD_ARRAY[*]}"
+    RUN_COMMAND="docker run ${DOCKER_ARGS[*]} $IMAGE_NAME -c \"$CMD_TO_RUN\""
 
-    RUN_COMMAND="docker run ${DOCKER_ARGS[*]} $IMAGE_NAME \"-c\" \"${EXTRA_CMD[*]} ${INITIAL_CMD_ARRAY[*]}\""
     echo -e "${CYAN}Container initialized with following arguments:\n${GRAY}${RUN_COMMAND}${NC}"
     $SHELL -c "$RUN_COMMAND"
-
-    # restore PS1
-    exec $SHELL 
 }
 
 
