@@ -108,6 +108,7 @@ done
    EXTRA_CMD=(
         'sudo chown root /home/_host_/.ssh/config > /dev/null 2>&1 || chown root /home/_host_/.ssh/config > /dev/null 2>&1 || true'
         '[ -d \"/home/_host_/.ssh\" ] && ln -s /home/_host_/.ssh \$HOME/.ssh || true'
+        '[ -f \"/home/_host_/.Xauthority\" ] && ln -s /home/_host_/.Xauthority \$HOME/.Xauthority || true'
         'grep -q 🐋 \$HOME/.bashrc || echo PS1=\\\"🐋 \\\$PS1\\\" >> \$HOME/.bashrc'
     )
 
